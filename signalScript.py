@@ -143,10 +143,10 @@ def calculate_rsi(df, period=14):
 def check_buy_sell_conditions(prices, rsi):
     if rsi is None:
         return False, False  # Early exit if RSI calculation failed
-    below_threshold_timeframes = {tf: (rsi[tf][-1] < 30 and prices[tf][-1] < prices[tf][-2])
-                                  for tf in ['1min', '5min', '15min', '1hr']}
-    above_threshold_timeframes = {tf: (rsi[tf][-1] > 70 and prices[tf][-1] > prices[tf][-2])
-                                  for tf in ['1min', '5min', '15min', '1hr']}
+    below_threshold_timeframes = {tf: (rsi[tf][-1] < 30 and prices[tf][-1] < prices[tf][0])
+                                      for tf in ['1min', '5min', '15min', '30min']}
+    above_threshold_timeframes = {tf: (rsi[tf][-1] > 70 and prices[tf][-1] > prices[tf][0])
+                                      for tf in ['1min', '5min', '15min', '30min']}
 
     buy_signal = all(below_threshold_timeframes.values())
     sell_signal = all(above_threshold_timeframes.values())
