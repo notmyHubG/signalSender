@@ -48,7 +48,11 @@ def fetch_data_for_intervals(symbol, intervals):
     
     # Expand the 'intervals' to fetch an adequate amount of historical data for calculating RSI accurately
     max_interval_length = max(intervals.values())
-    required_historical_length = timedelta(minutes=max_interval_length) + timedelta(days=14)
+    # Adjust the required historical length for the 30min timeframe
+    if '30min' in intervals:
+        required_historical_length = timedelta(minutes=max_interval_length) + timedelta(days=30)
+    else:
+        required_historical_length = timedelta(minutes=max_interval_length) + timedelta(days=14)
 
     # Fetch the historical data considering the longest interval for RSI calculation
     prices = fetch_historical_data(symbol, required_historical_length)
