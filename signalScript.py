@@ -93,7 +93,7 @@ def send_email(subject, body):
     sender_email = EMAIL_USER
     recipient = RECIPIENT_EMAIL
     sender_password = EMAIL_PASS
-    print("[NOTIFICATION] Preparing to send email notification")
+    print("Preparing to send email notification")
     try:
         msg = MIMEMultipart()
         msg['From'] = sender_email
@@ -118,9 +118,21 @@ def fetch_historical_data(symbol, interval):
     else:
         print("Invalid interval format. Should be like '5m'.")
         return pd.DataFrame()  # Return an empty DataFrame in case of an invalid format
+    
+    # Dynamically adjust the lookback period based on the interval
+    if interval_minutes == 5:
+        required_data_point_count = 16  # For 5-minute intervals
+    elif interval_minutes == 15:
+        required_data_point_count = 16 * 3  # Adjusting for 15-minute intervals
+    elif interval_minutes == 30:
+        required_data_point_count = 16 * 6  # Adjusting for 30-minute intervals
+    else:
+        # Default case or handling unexpected intervals
+        required_data_point_count = 16
+        print(f"Unexpected interval '{interval}', defaulting to 16 data points.")
 
-    required_data_point_count = 16
     lookback_period = interval_minutes * required_data_point_count
+
 
     # Convert required_length (timedelta) to the 'start' parameter for the API call
     end_time = datetime.now(timezone.utc)
@@ -129,8 +141,6 @@ def fetch_historical_data(symbol, interval):
     # Format start_time and end_time for the API request
     start = start_time.strftime('%Y-%m-%dT%H:%M:%SZ')
     end = end_time.strftime('%Y-%m-%dT%H:%M:%SZ')
-
-    print(f"[FETCHING] historical data for {symbol} from {start} to {end}")
 
     url = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/historical" 
     params = {
@@ -202,42 +212,99 @@ def calculate_rsi(df, period=14):
     rsi.index = df.index[1:]  # Align the index with the original data's index
     return rsi
 
+def calculate_stoch_rsi(df, rsi_period=14, stoch_period=14):
+    if 'price' not in df.columns:
+        raise ValueError("DataFrame does not contain a 'price' column")
+
+    if len(df) < rsi_period:
+        raise ValueError(f"Not enough data to calculate RSI, got {len(df)} points, need at least {rsi_period}")
+
+    if df['price'].isnull().any():
+        raise ValueError("Price column contains null values")
+    if not pd.api.types.is_numeric_dtype(df['price']):
+        raise ValueError("Price column must be numeric")
+
+    delta = df['price'].diff(1)
+    gain = delta.where(delta > 0, 0)
+    loss = -delta.where(delta < 0, 0)
+
+    average_gain = gain.ewm(com=rsi_period - 1, min_periods=rsi_period).mean()
+    average_loss = loss.ewm(com=rsi_period - 1, min_periods=rsi_period).mean()
+
+    rs = average_gain / average_loss
+    rsi = 100 - (100 / (1 + rs))
+    
+    # Calculate StochRSI
+    lowest_low_rsi = rsi.rolling(window=stoch_period, min_periods=stoch_period).min()
+    highest_high_rsi = rsi.rolling(window=stoch_period, min_periods=stoch_period).max()
+
+    stoch_rsi = (rsi - lowest_low_rsi) / (highest_high_rsi - lowest_low_rsi)
+
+    # Align indices
+    stoch_rsi.index = df.index
+
+    return rsi, stoch_rsi
 
 
 # Analyze market conditions and decide signals
 def analyze_market_conditions(symbol):
     global last_signal
     current_signal = "none"
-    prices, rsi_values = {}, {}
+    rsi_values = {}
+    hold_sell_condition_met = False
+    wait_buy_condition_met = False
 
     for timeframe in timeframes:
-        # Correct the function call by removing the 'lookback' argument
-        df = fetch_historical_data(symbol, f"{timeframe}m")  # Assuming this returns a DataFrame
+        df = fetch_historical_data(symbol, f"{timeframe}m")
         if df.empty:
             print(f"Failed to fetch data for {timeframe}m timeframe.")
             return
 
+        df['timestamp'] = pd.to_datetime(df['timestamp'])
+
         if len(df) < 14:
             print(f"Not enough data to calculate RSI for {symbol}. Got {len(df)} points.")
-            # Consider skipping RSI calculation or handling this case appropriately
             return
 
-        rsi = calculate_rsi(df, period=14)
-        last_price = df['price'].iloc[-1]
-        first_price = df['price'].iloc[0]
-
-        prices[timeframe] = last_price
+        rsi = calculate_stoch_rsi(df, period=14)
         rsi_values[timeframe] = rsi.iloc[-1]
 
-        buy_condition = all(rsi < 35 for rsi in rsi_values.values()) and last_price < first_price
-        sell_condition = all(rsi > 65 for rsi in rsi_values.values()) and last_price > first_price
+        current_price = df['price'].iloc[-1]
+        
+        # Fixing the approach to find the closest past prices
+        now_utc = datetime.now(timezone.utc)
+        df['time_diff_5'] = abs((df['timestamp'] - (now_utc - timedelta(minutes=5))).dt.total_seconds())
+        df['time_diff_15'] = abs((df['timestamp'] - (now_utc - timedelta(minutes=15))).dt.total_seconds())
+        
+        price_5_min_ago = df.loc[df['time_diff_5'].idxmin()]['price']
+        price_15_min_ago = df.loc[df['time_diff_15'].idxmin()]['price']
+
+       
+        # Define conditions for buy, sell, hold (to sell), and wait (to buy)
+        buy_condition = all(rsi < 35 for rsi in rsi_values.values()) and (current_price < price_5_min_ago) and (current_price < price_15_min_ago)
+        sell_condition = all(rsi > 65 for rsi in rsi_values.values()) and (current_price > price_5_min_ago) and (current_price > price_15_min_ago)
+        hold_sell_condition = all(50 < rsi < 65 for rsi in rsi_values.values())  # RSI indicates potential overbought but not yet time to sell
+        wait_buy_condition = all(35 < rsi < 50 for rsi in rsi_values.values())  # RSI indicates potential oversold but not yet time to buy
 
         if buy_condition:
             current_signal = "buy"
         elif sell_condition:
             current_signal = "sell"
+        elif hold_sell_condition:
+            hold_sell_condition_met = True
+        elif wait_buy_condition:
+            wait_buy_condition_met = True
 
-    print(f"Last signal: {last_signal.get('signal', 'none')}, Current signal: {current_signal}, RSI: {rsi_values}, Current price: {prices[timeframes[-1]]}")
+    # Decide on the current signal based on the conditions met
+    if hold_sell_condition_met:
+        current_signal = "hold to sell"
+    elif wait_buy_condition_met:
+        current_signal = "wait to buy"
+    else:
+        # If none of the specific conditions are met, default to the last known signal
+        current_signal = last_signal.get('signal', 'none')
+
+    print(f"\n{current_signal}, RSI: {rsi_values}, Current {SYMBOL} price: {current_price}")
 
     if current_signal != last_signal.get('signal', 'none') and current_signal != "none":
         subject = f"{SYMBOL} {current_signal.upper()} Signal"
@@ -251,7 +318,7 @@ def job():
 
 schedule.every(1).minute.do(job)
 
-print("Script started. Waiting for the next check...")
+print("Script started. Wait one minute for price check...")
 while True:
     schedule.run_pending()
     time.sleep(1)
