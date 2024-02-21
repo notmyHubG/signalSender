@@ -266,7 +266,7 @@ def analyze_market_conditions(symbol):
             print(f"Not enough data to calculate RSI for {symbol}. Got {len(df)} points.")
             return
 
-        rsi = calculate_stoch_rsi(df, rsi_period=14, stoch_period=14)
+        rsi = calculate_rsi(df, period=14) # use calculate_stoch_rsi if wanted
         rsi_values[timeframe] = rsi.iloc[-1]
 
         current_price = df['price'].iloc[-1]
