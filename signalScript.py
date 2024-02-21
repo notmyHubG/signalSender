@@ -254,8 +254,13 @@ def update_state():
         send_email(subject, body)
 
 def job():
+    record_price_data_to_json('BTC')  # Record BTC price data to JSON
     # Fetch new data every time the job runs
     historical_data_json = fetch_historical_data(symbol='BTC', required_length=timedelta(days=1))
+    prices, rsi = fetch_data_for_intervals('BTC', intervals)
+    print("Current Price and RSI per Timeframe:")
+    for timeframe in intervals:
+        print(f"{timeframe}: Price - {prices[timeframe][-1]}, RSI - {rsi[timeframe][-1]}")
 
     # Check if historical_data_json is not None or empty
     if not historical_data_json.empty:
