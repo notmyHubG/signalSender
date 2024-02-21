@@ -279,3 +279,44 @@ while True:
     schedule.run_pending()
     time.sleep(1)
     print(".", end="", flush=True)
+def record_price_data_to_json(symbol='BTC'):
+    """
+    Fetches the current price for the given symbol and records it to a JSON file.
+    """
+    url = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest"
+    parameters = {
+        'symbol': symbol,
+    }
+    headers = {
+        'Accepts': 'application/json',
+        'X-CMC_PRO_API_KEY': CMC_API_KEY,
+    }
+
+    try:
+        response = requests.get(url, headers=headers, params=parameters)
+        response.raise_for_status()
+        data = response.json()
+        price = data['data'][symbol]['quote']['USD']['price']
+        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+        # Load existing data
+        with open('data.json', 'r') as file:
+            price_data = json.load(file)
+
+        # Append new price data
+        if symbol not in price_data:
+            price_data[symbol] = []
+        price_data[symbol].append({'timestamp': timestamp, 'price': price})
+
+        # Save updated data back to file
+        with open('data.json', 'w') as file:
+            json.dump(price_data, file)
+
+        print(f"Recorded {symbol} price data: {price} at {timestamp}")
+    except requests.exceptions.HTTPError as e:
+        print(f"HTTP error occurred: {e}")
+    except Exception as e:
+        print(f"An error occurred: {e}")
+    schedule.run_pending()
+    time.sleep(1)
+    print(".", end="", flush=True)
