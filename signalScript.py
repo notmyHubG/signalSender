@@ -48,7 +48,11 @@ def fetch_data_for_intervals(symbol, intervals):
     
     # Expand the 'intervals' to fetch an adequate amount of historical data for calculating RSI accurately
     max_interval_length = max(intervals.values())
-    required_historical_length = timedelta(minutes=max_interval_length) + timedelta(days=14)
+    # Adjust the required historical length for the 30min timeframe
+    if '30min' in intervals:
+        required_historical_length = timedelta(minutes=max_interval_length) + timedelta(days=30)
+    else:
+        required_historical_length = timedelta(minutes=max_interval_length) + timedelta(days=14)
 
     # Fetch the historical data considering the longest interval for RSI calculation
     prices = fetch_historical_data(symbol, required_historical_length)
@@ -143,10 +147,10 @@ def calculate_rsi(df, period=14):
 def check_buy_sell_conditions(prices, rsi):
     if rsi is None:
         return False, False  # Early exit if RSI calculation failed
-    below_threshold_timeframes = {tf: (rsi[tf][-1] < 30 and prices[tf][-1] < prices[tf][-2])
-                                  for tf in ['1min', '5min', '15min', '1hr']}
-    above_threshold_timeframes = {tf: (rsi[tf][-1] > 70 and prices[tf][-1] > prices[tf][-2])
-                                  for tf in ['1min', '5min', '15min', '1hr']}
+    below_threshold_timeframes = {tf: (rsi[tf][-1] < 30 and prices[tf][-1] < prices[tf][0])
+                                      for tf in ['1min', '5min', '15min', '30min']}
+    above_threshold_timeframes = {tf: (rsi[tf][-1] > 70 and prices[tf][-1] > prices[tf][0])
+                                      for tf in ['1min', '5min', '15min', '30min']}
 
     buy_signal = all(below_threshold_timeframes.values())
     sell_signal = all(above_threshold_timeframes.values())
@@ -203,6 +207,7 @@ def analyze_and_notify(symbol):
         '1min': 1,
         '5min': 5,
         '15min': 15,
+        '30min': 30,
         '1hr': 60
     }
     
@@ -253,23 +258,32 @@ def update_state():
         send_email(subject, body)
 
 def job():
-    # Fetch new data every time the job runs
-    historical_data_json = fetch_historical_data(symbol='BTC', required_length=timedelta(days=1))
+    # Fetch new BTC price data every minute and record it
+    current_price_data = fetch_historical_data(symbol='BTC', required_length=timedelta(minutes=1))
+    if not current_price_data.empty:
+        # Append the current price data to 'data.json'
+        with open('data.json', 'r+') as file:
+            data = json.load(file)
+            data[str(datetime.now())] = current_price_data.iloc[-1]
+            file.seek(0)
+            json.dump(data, file, indent=4)
+            file.truncate()
 
-    # Check if historical_data_json is not None or empty
-    if not historical_data_json.empty:
         # Convert to DataFrame
-        historical_data_df = json_to_dataframe(historical_data_json)
+        historical_data_df = json_to_dataframe({'data': {'quotes': [{'timestamp': str(datetime.now()), 'quote': {'USD': {'price': current_price_data.iloc[-1]}}}]}})
         
+        # Calculate and print the current price and RSI for specified timeframes
+        print(f"Current price: {current_price_data.iloc[-1]}")
+        for interval in ['1min', '5min', '15min', '30min']:
+            interval_prices = historical_data_df.tail(int(interval[:-3]))  # Assuming 'interval[:-3]' gives us the numeric part of the interval string
+            rsi = calculate_rsi(interval_prices)
+            print(f"Current RSI ({interval}): {rsi.iloc[-1]}")
+
         # Perform analysis and notification
-        analyze_and_notify('BTC', historical_data_df)
+        analyze_and_notify('BTC')
     else:
         # Handle the failed data retrieval
-        print("Failed to fetch historical data")
-
-    print("\nChecking...")
-    analyze_and_notify('BTC')
-    print("...")
+        print("Failed to fetch current BTC price data")
 
 schedule.every(1).minute.do(job)
 
