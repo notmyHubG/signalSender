@@ -1,13 +1,6 @@
 # signalSender
 
 
-Use CMD to set vars or edit file directly (unsafe).
+Edit variables and run script:
 
-
-setx CMC_API_KEY "CoinMarketCap-API"
-
-setx EMAIL_USER "you@gmail.com"
-
-setx EMAIL_PASS "your pass"
-
-setx RECIPIENT_EMAIL "you@gmail.com"
+python signalSender.py
