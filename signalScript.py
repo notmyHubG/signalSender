@@ -97,6 +97,7 @@ def fetch_historical_data(symbol, required_length):
         response = requests.get(url, headers=headers, params=params)
         response.raise_for_status()  # Raises an HTTPError if the response status code is 4XX or 5XX
         data = response.json()
+        print(response.json()) # print to console
 
         # Assuming the API returns data in a structure that includes timestamps and prices
         # You might need to adjust the following lines according to the actual structure of the data
