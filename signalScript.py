@@ -2,7 +2,23 @@
 # Buy/Sell signal script
 # 
 # Use code  Hobbyist_Yearly_10  to save 10 percent on CMC
+#
+# 
+# The script checks price data every minute.
+# The script prints and emails buy/sell signal.
+# The script only emails when buy or sell signal activated, do nothing if no change.
+# Print should print last signal, current signal, current RSI per timeframe, and current price every minute to console.
+# 
+# Buy signal if a specific stock/crypto is:
+# Below 35 RSI on the 5 min, 15 min, and 30 min chart.
+# And if current price is below the price 5 min ago, 15 min ago, as well as 30 min ago.
+# 
+# Sell signal if it is:
+# Above 65 RSI on the 5 min, 15 min, and 30 min chart.
+# And if current price is above the price 5 min ago, 15 min ago, as well as 30 min ago.
+# 
 
+import re
 import json
 import os
 import requests
@@ -15,106 +31,147 @@ from datetime import timezone, datetime, timedelta
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
-CMC_API_KEY = os.getenv('CMC_API_KEY')
-EMAIL_USER = os.getenv('EMAIL_USER')
-EMAIL_PASS = os.getenv('EMAIL_PASS')
-RECIPIENT_EMAIL = os.getenv('RECIPIENT_EMAIL')
+SYMBOL='BTC'
+CMC_API_KEY='API_KEY'
+EMAIL_USER='email@gmail.com'
+EMAIL_PASS='pass'
+RECIPIENT_EMAIL='email@gmail.com'
+interval='5m' # in minutes
+timeframes = [5, 15, 30]
 
 if not os.path.exists('data.json'):
     with open('data.json', 'w') as file:
         json.dump({}, file)
+    print("data.json file created")
+else:
+    print("data.json file exists")
 
 with open('data.json', 'r') as file:
     your_json_data = json.load(file)
 
-def json_to_dataframe(your_json_data):
+# Function to load state
+def load_state(file_name='last_signal_state.json'):
     try:
-        return pd.DataFrame([{
+        with open(file_name, 'r') as file:
+            data = json.load(file)
+            # Ensure there's a 'signal' key in the data
+            if 'signal' not in data:
+                data['signal'] = 'none'  # Or any default value you see fit
+            return data
+    except FileNotFoundError:
+        return {"signal": "none"}
+
+# Function to save state
+def save_state(data, file_name='last_signal_state.json'):
+    with open(file_name, 'w') as file:
+        json.dump(data, file, ensure_ascii=False, indent=4)
+
+# Load last signal from state
+last_signal = load_state()
+
+def json_to_dataframe(data):
+    try:
+        quotes = data['data']['quotes']
+        df = pd.DataFrame([{
                 'timestamp': quote['timestamp'],
                 'price': quote['quote']['USD']['price'],
-                'symbol': your_json_data['data']['symbol'],
-                'name': your_json_data['data']['name']
-            } for quote in your_json_data['data']['quotes']
-        ])
+                'volume_24h': quote['quote']['USD']['volume_24h'],
+                'market_cap': quote['quote']['USD']['market_cap'],
+                'circulating_supply': quote['quote']['USD']['circulating_supply'],
+                'total_supply': quote['quote']['USD']['total_supply']
+            } for quote in quotes])
+        return df
     except KeyError as e:
         print(f"Key {e} not found in JSON data")
         return pd.DataFrame()
 
 historical_data = json_to_dataframe(your_json_data)
 
-def fetch_data_for_intervals(symbol, intervals):
-    prices_data = {}
-    rsi_data = {}
-    
-    # Expand the 'intervals' to fetch an adequate amount of historical data for calculating RSI accurately
-    max_interval_length = max(intervals.values())
-    # Adjust the required historical length for the 30min timeframe
-    if '30min' in intervals:
-        required_historical_length = timedelta(minutes=max_interval_length) + timedelta(days=30)
+
+
+def send_email(subject, body):
+    sender_email = EMAIL_USER
+    recipient = RECIPIENT_EMAIL
+    sender_password = EMAIL_PASS
+    print("[NOTIFICATION] Preparing to send email notification")
+    try:
+        msg = MIMEMultipart()
+        msg['From'] = sender_email
+        msg['To'] = recipient
+        msg['Subject'] = subject
+        msg.attach(MIMEText(body, 'plain'))
+
+        server = smtplib.SMTP('smtp.gmail.com', 587)
+        server.starttls()
+        server.login(sender_email, sender_password)
+        server.sendmail(sender_email, recipient, msg.as_string())
+        server.quit()
+        print("Email sent successfully!")
+    except Exception as e:
+        print(f"Error sending email: {e}")
+
+
+def fetch_historical_data(symbol, interval):
+    match = re.match(r'^(\d+)m$', interval)
+    if match:
+        interval_minutes = int(match.group(1))
     else:
-        required_historical_length = timedelta(minutes=max_interval_length) + timedelta(days=14)
+        print("Invalid interval format. Should be like '5m'.")
+        return pd.DataFrame()  # Return an empty DataFrame in case of an invalid format
 
-    # Fetch the historical data considering the longest interval for RSI calculation
-    prices = fetch_historical_data(symbol, required_historical_length)
+    required_data_point_count = 16
+    lookback_period = interval_minutes * required_data_point_count
 
-    if prices.empty:
-        print("Could not fetch historical data")
-        return prices_data, rsi_data
-
-    # Calculate and save prices and RSI data for each interval
-    for interval_name, interval_length in intervals.items():
-        # Calculate the exact number of rows to take based on your data's time resolution
-        interval_prices = prices.tail(interval_length)  # Assuming 'interval_length' can directly correspond to the number of rows
-        rsi = calculate_rsi(interval_prices)
-        # Adjust resampling if needed, based on the actual time resolution of your data
-        prices_data[interval_name] = interval_prices
-        rsi_data[interval_name] = rsi
-
-    return prices_data, rsi_data
-
-def fetch_historical_data(symbol, required_length):
     # Convert required_length (timedelta) to the 'start' parameter for the API call
     end_time = datetime.now(timezone.utc)
-    start_time = end_time - required_length
+    start_time = end_time - timedelta(minutes=lookback_period)
 
     # Format start_time and end_time for the API request
-    start = start_time.strftime('%Y-%m-%d')
-    end = end_time.strftime('%Y-%m-%d')
+    start = start_time.strftime('%Y-%m-%dT%H:%M:%SZ')
+    end = end_time.strftime('%Y-%m-%dT%H:%M:%SZ')
+
+    print(f"[FETCHING] historical data for {symbol} from {start} to {end}")
 
     url = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/historical" 
     params = {
         'symbol': symbol,
-        'time_start': start.strftime('%Y-%m-%dT%H:%M:%SZ'),  # Format start time
-        'time_end': end.strftime('%Y-%m-%dT%H:%M:%SZ'),  # Format end time
-        'interval': interval,
+        'time_start': start,  # Use the formatted start time directly
+        'time_end': end,  # Use the formatted end time directly
+        'interval': interval,  # Ensure 'interval' is defined. Adjust as needed based on your requirements
+
     }
     headers = {
         'Accepts': 'application/json',
         'X-CMC_PRO_API_KEY': CMC_API_KEY,  # Ensure CMC_API_KEY is defined globally or passed appropriately
     }
 
+
+
+
     try:
         response = requests.get(url, headers=headers, params=params)
         response.raise_for_status()  # Raises an HTTPError if the response status code is 4XX or 5XX
         data = response.json()
-        print(response.json()) # print to console
+        # print(data)  # Debug print to console
 
-        # Assuming the API returns data in a structure that includes timestamps and prices
-        # You might need to adjust the following lines according to the actual structure of the data
-        timestamps = [item['timestamp'] for item in data['data']]
-        prices = [item['price'] for item in data['data']]
+        prices_series = json_to_dataframe(data)  # Use the refined json_to_dataframe function
 
-        # Convert the lists to a pandas Series for easier manipulation later
-        prices_series = pd.Series(prices, index=pd.to_datetime(timestamps), name='Price')
-
-        return prices_series
+        return prices_series  # Return the DataFrame/Series with prices and timestamps
     except requests.exceptions.HTTPError as e:
-        print(f"HTTP error occurred: {e}")  # Not all HTTP errors are due to authentication issues
+        try:
+            error_details = response.json()  # Ensure 'response' is defined before this line
+            error_message = error_details.get('status', {}).get('error_message', 'No error message provided')
+            print(f"HTTP error occurred: {e} - Error message: {error_message}")
+        except ValueError:
+            # If response is not in JSON format or doesn't contain the expected data
+            print(f"HTTP error occurred: {e} - Unable to extract error message from response")
     except Exception as e:
         print(f"An error occurred: {e}")
 
-    # Return an empty Series if the fetch fails
-    return pd.Series()
+    return pd.DataFrame()  # Return an empty DataFrame if the fetch fails or an error occurs
+
+
+
 
 def calculate_rsi(df, period=14):
     if 'price' not in df.columns:
@@ -145,146 +202,52 @@ def calculate_rsi(df, period=14):
     rsi.index = df.index[1:]  # Align the index with the original data's index
     return rsi
 
-def check_buy_sell_conditions(prices, rsi):
-    if rsi is None:
-        return False, False  # Early exit if RSI calculation failed
-    below_threshold_timeframes = {tf: (rsi[tf][-1] < 30 and prices[tf][-1] < prices[tf][0])
-                                      for tf in ['1min', '5min', '15min', '30min']}
-    above_threshold_timeframes = {tf: (rsi[tf][-1] > 70 and prices[tf][-1] > prices[tf][0])
-                                      for tf in ['1min', '5min', '15min', '30min']}
 
-    buy_signal = all(below_threshold_timeframes.values())
-    sell_signal = all(above_threshold_timeframes.values())
 
-    return buy_signal, sell_signal
-
-def send_email(subject, body):
-    sender_email = EMAIL_USER
-    recipient = RECIPIENT_EMAIL
-    sender_password = EMAIL_PASS
-    try:
-        msg = MIMEMultipart()
-        msg['From'] = sender_email
-        msg['To'] = recipient
-        msg['Subject'] = subject
-        msg.attach(MIMEText(body, 'plain'))
-
-        server = smtplib.SMTP('smtp.gmail.com', 587)
-        server.starttls()
-        server.login(sender_email, sender_password)
-        server.sendmail(sender_email, recipient, msg.as_string())
-        server.quit()
-        print("Email sent successfully!")
-    except Exception as e:
-        print(f"Error sending email: {e}")
-
-def handle_notifications(current_signal, last_signal):
-    if current_signal != last_signal:
-        save_state({'signal': current_signal})
-        subject = f"{current_signal.capitalize()} signal for BTC"
-        body = f"A {current_signal} signal has been detected for Bitcoin."
-        send_email(subject, body)
-        last_signal = current_signal  # Update the last_signal for the next cycle
-
-# Assuming you have a function to load and save state; if not, here are simple implementations
-def save_state(data, file_name='last_signal_state.json'):
-    with open(file_name, 'w') as file:
-        json.dump(data, file)
-
-def load_state(file_name='last_signal_state.json'):
-    try:
-        with open(file_name, 'r') as file:
-            return json.load(file)
-    except FileNotFoundError:
-        return {}
-
-last_signal = load_state()
-
-def analyze_and_notify(symbol):
+# Analyze market conditions and decide signals
+def analyze_market_conditions(symbol):
     global last_signal
-    
-    # Defined intervals for consideration
-    intervals = {
-        '1min': 1,
-        '5min': 5,
-        '15min': 15,
-        '30min': 30,
-        '1hr': 60
-    }
-    
-     # Check buy/sell conditions for each interval
-    buy_signal, sell_signal = check_buy_sell_conditions(prices, rsi)
+    current_signal = "none"
+    prices, rsi_values = {}, {}
 
-    print("last_signal: ", last_signal)
-    print("current_signal: ", 'None' if not buy_signal and not sell_signal else 'buy' if buy_signal else 'sell')
-    print("current_RSI: ", {tf: rsi[tf][-1] for tf in intervals})
-    print("current_price: ", {tf: prices[tf][-1] for tf in intervals})
+    for timeframe in timeframes:
+        # Correct the function call by removing the 'lookback' argument
+        df = fetch_historical_data(symbol, f"{timeframe}m")  # Assuming this returns a DataFrame
+        if df.empty:
+            print(f"Failed to fetch data for {timeframe}m timeframe.")
+            return
 
-    update_state(buy_signal, sell_signal)
-    
-def update_state():
-    global last_signal
-    buy_signals = []
-    sell_signals = []
+        if len(df) < 14:
+            print(f"Not enough data to calculate RSI for {symbol}. Got {len(df)} points.")
+            # Consider skipping RSI calculation or handling this case appropriately
+            return
 
-    for interval_name, interval_minutes in intervals.items():
-        historical_data_json = fetch_historical_data(symbol, interval_minutes)
-        
-        if not historical_data_json.empty:
-            prices_data = historical_data_json['price']
-            rsi_data = calculate_rsi(prices_data)
+        rsi = calculate_rsi(df, period=14)
+        last_price = df['price'].iloc[-1]
+        first_price = df['price'].iloc[0]
 
-            current_price = prices_data.iloc[-1]
-            previous_price = prices_data.iloc[-interval_minutes]
+        prices[timeframe] = last_price
+        rsi_values[timeframe] = rsi.iloc[-1]
 
-            buy_signal = rsi_data.iloc[-1] < 30 and current_price < previous_price
-            sell_signal = rsi_data.iloc[-1] > 70 and current_price > previous_price
-            
-            buy_signals.append(buy_signal)
-            sell_signals.append(sell_signal)
-            
-        else:
-            print(f"Failed to fetch historical data for {interval_name}")
-            return  # Exit if data fetching fails
+        buy_condition = all(rsi < 35 for rsi in rsi_values.values()) and last_price < first_price
+        sell_condition = all(rsi > 65 for rsi in rsi_values.values()) and last_price > first_price
 
-    # The buy/sell signal is true if all intervals agree
-    current_signal = 'buy' if all(buy_signals) else 'sell' if all(sell_signals) else 'none'
-    
-    # If the signal has changed, update the state and send an email
-    if current_signal != last_signal.get('signal', None):
-        last_signal = {'signal': current_signal}
-        save_state(last_signal)
-        subject = f"{symbol} {current_signal.upper()} Signal"
-        body = f"A {current_signal} signal has been detected for {symbol}."
+        if buy_condition:
+            current_signal = "buy"
+        elif sell_condition:
+            current_signal = "sell"
+
+    print(f"Last signal: {last_signal.get('signal', 'none')}, Current signal: {current_signal}, RSI: {rsi_values}, Current price: {prices[timeframes[-1]]}")
+
+    if current_signal != last_signal.get('signal', 'none') and current_signal != "none":
+        subject = f"{SYMBOL} {current_signal.upper()} Signal"
+        body = f"A {current_signal} signal has been detected for {SYMBOL}."
         send_email(subject, body)
+        last_signal['signal'] = current_signal  # Update last_signal with the current signal
+        save_state(last_signal)  # Save the updated last_signal state
 
 def job():
-    # Fetch new BTC price data every minute and record it
-    current_price_data = fetch_historical_data(symbol='BTC', required_length=timedelta(minutes=1))
-    if not current_price_data.empty:
-        # Append the current price data to 'data.json'
-        with open('data.json', 'r+') as file:
-            data = json.load(file)
-            data[str(datetime.now())] = current_price_data.iloc[-1]
-            file.seek(0)
-            json.dump(data, file, indent=4)
-            file.truncate()
-
-        # Convert to DataFrame
-        historical_data_df = json_to_dataframe({'data': {'quotes': [{'timestamp': str(datetime.now()), 'quote': {'USD': {'price': current_price_data.iloc[-1]}}}]}})
-        
-        # Calculate and print the current price and RSI for specified timeframes
-        print(f"Current price: {current_price_data.iloc[-1]}")
-        for interval in ['1min', '5min', '15min', '30min']:
-            interval_prices = historical_data_df.tail(int(interval[:-3]))  # Assuming 'interval[:-3]' gives us the numeric part of the interval string
-            rsi = calculate_rsi(interval_prices)
-            print(f"Current RSI ({interval}): {rsi.iloc[-1]}")
-
-        # Perform analysis and notification
-        analyze_and_notify('BTC')
-    else:
-        # Handle the failed data retrieval
-        print("Failed to fetch current BTC price data")
+    analyze_market_conditions(SYMBOL)
 
 schedule.every(1).minute.do(job)
 
