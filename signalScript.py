@@ -254,23 +254,32 @@ def update_state():
         send_email(subject, body)
 
 def job():
-    # Fetch new data every time the job runs
-    historical_data_json = fetch_historical_data(symbol='BTC', required_length=timedelta(days=1))
+    # Fetch new BTC price data every minute and record it
+    current_price_data = fetch_historical_data(symbol='BTC', required_length=timedelta(minutes=1))
+    if not current_price_data.empty:
+        # Append the current price data to 'data.json'
+        with open('data.json', 'r+') as file:
+            data = json.load(file)
+            data[str(datetime.now())] = current_price_data.iloc[-1]
+            file.seek(0)
+            json.dump(data, file, indent=4)
+            file.truncate()
 
-    # Check if historical_data_json is not None or empty
-    if not historical_data_json.empty:
         # Convert to DataFrame
-        historical_data_df = json_to_dataframe(historical_data_json)
+        historical_data_df = json_to_dataframe({'data': {'quotes': [{'timestamp': str(datetime.now()), 'quote': {'USD': {'price': current_price_data.iloc[-1]}}}]}})
         
+        # Calculate and print the current price and RSI for specified timeframes
+        print(f"Current price: {current_price_data.iloc[-1]}")
+        for interval in ['1min', '5min', '15min', '30min']:
+            interval_prices = historical_data_df.tail(int(interval[:-3]))  # Assuming 'interval[:-3]' gives us the numeric part of the interval string
+            rsi = calculate_rsi(interval_prices)
+            print(f"Current RSI ({interval}): {rsi.iloc[-1]}")
+
         # Perform analysis and notification
-        analyze_and_notify('BTC', historical_data_df)
+        analyze_and_notify('BTC')
     else:
         # Handle the failed data retrieval
-        print("Failed to fetch historical data")
-
-    print("\nChecking...")
-    analyze_and_notify('BTC')
-    print("...")
+        print("Failed to fetch current BTC price data")
 
 schedule.every(1).minute.do(job)
 
